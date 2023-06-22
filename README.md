@@ -40,4 +40,4 @@ git clone -b shinkhorn <shinkhorn repogitory_url>
 ### knowleadge
 <b>ReOrg layer in yolov7-aux</b>
 
-<img src="https://user-images.githubusercontent.com/48679574/200152880-9e9d5557-b2d6-4418-8774-63e96d02dd45.png" width="800" height="300"/>
+<img src="https://github.com/madara-tribe/custom-yolov7/assets/48679574/4cd23512-b299-40e9-8863-30630ff99dc6" width="800" height="500"/>
