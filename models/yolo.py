@@ -113,6 +113,7 @@ class IDetect(nn.Module):
         self.register_buffer('anchors', a)  # shape(nl,na,2)
         self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        
         self.ia = nn.ModuleList(ImplicitA(x) for x in ch)
         self.im = nn.ModuleList(ImplicitM(self.no * self.na) for _ in ch)
 
@@ -149,11 +150,11 @@ class IDetect(nn.Module):
             if not self.training:  # inference
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:
                     self.grid[i] = self._make_grid(nx, ny).to(x[i].device)
-                y = x[i].sigmoid()#.to('cuda:0')
-                #self.anchor_grid = self.anchor_grid.to('cuda:0')
+
+                y = x[i].sigmoid()
                 if not torch.onnx.is_in_onnx_export():
                     y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
-                    y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i] #.to('cuda:0')  # wh
+                    y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
                 else:
                     xy, wh, conf = y.split((2, 2, self.nc + 1), 4)  # y.tensor_split((2, 4, 5), 4)  # torch 1.8.0
                     xy = xy * (2. * self.stride[i]) + (self.stride[i] * (self.grid[i] - 0.5))  # new xy
@@ -330,7 +331,7 @@ class IAuxDetect(nn.Module):
         
         self.ia = nn.ModuleList(ImplicitA(x) for x in ch[:self.nl])
         self.im = nn.ModuleList(ImplicitM(self.no * self.na) for _ in ch[:self.nl])
-        print("chchchchh", ch)
+
     def forward(self, x):
         # x = x.copy()  # for profiling
         z = []  # inference output
@@ -345,12 +346,10 @@ class IAuxDetect(nn.Module):
             x[i+self.nl] = x[i+self.nl].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
 
             if not self.training:  # inference
-                print('useeeeeee', x[i].device)
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:
                     self.grid[i] = self._make_grid(nx, ny).to(x[i].device)
 
                 y = x[i].sigmoid()
-                y = y.to(x[i].device)
                 if not torch.onnx.is_in_onnx_export():
                     y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
                     y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
@@ -506,11 +505,11 @@ class IBin(nn.Module):
         yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
         return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
 
+
 class Model(nn.Module):
-    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc=None, anchors=None, model_type=None):  # model, input channels, number of classes
+    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
         super(Model, self).__init__()
         self.traced = False
-        self.model_type = str(model_type)
         if isinstance(cfg, dict):
             self.yaml = cfg  # model dict
         else:  # is *.yaml
@@ -525,15 +524,15 @@ class Model(nn.Module):
             logger.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml['nc'] = nc  # override yaml value
         if anchors:
+            print("anchors", anchors)
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch], model_type=self.model_type)  # model, savelist
+        self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
         self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
         # print([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
-
+        print("self.yaml['anchors']", self.yaml['anchors'])
         # Build strides, anchors
         m = self.model[-1]  # Detect()
-        
         if isinstance(m, Detect):
             s = 256  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
@@ -542,7 +541,7 @@ class Model(nn.Module):
             self.stride = m.stride
             self._initialize_biases()  # only run once
             # print('Strides: %s' % m.stride.tolist())
-        if 'IDetect' in str(m) or isinstance(m, IDetect):
+        if isinstance(m, IDetect):
             s = 256  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             check_anchor_order(m)
@@ -550,7 +549,7 @@ class Model(nn.Module):
             self.stride = m.stride
             self._initialize_biases()  # only run once
             # print('Strides: %s' % m.stride.tolist())
-        if 'IAuxDetect' in str(m) or isinstance(m, IAuxDetect):
+        if isinstance(m, IAuxDetect):
             s = 256  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[:4]])  # forward
             #print(m.stride)
@@ -603,24 +602,6 @@ class Model(nn.Module):
 
     def forward_once(self, x, profile=False):
         y, dt = [], []  # outputs
-        if self.model_type=='yolov7':
-            for m in self.model:
-                if not hasattr(self, 'traced'):
-                    self.traced=False
-                if self.traced:
-                    if 'IDetect' in str(m):
-                        break
-                x = m(x)  # run
-            return x
-        elif 'aux' in self.model_type:
-            for m in self.model:
-                if not hasattr(self, 'traced'):
-                    self.traced=False
-                if self.traced:
-                    if 'IAuxDetect' in str(m):
-                        break
-                x = m(x)  # run
-            return x
         for m in self.model:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
@@ -644,12 +625,13 @@ class Model(nn.Module):
                 print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
 
             x = m(x)  # run
-            #print("xxxxxxxx", len(x), x[0].shape)
+            
             y.append(x if m.i in self.save else None)  # save output
 
         if profile:
             print('%.1fms total' % sum(dt))
         return x
+
     def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
         # https://arxiv.org/abs/1708.02002 section 3.3
         # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1.
@@ -753,7 +735,7 @@ class Model(nn.Module):
         model_info(self, verbose, img_size)
 
 
-def parse_model(d, ch, model_type=None):
+def parse_model(d, ch):  # model_dict, input_channels(3)
     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
     anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
     na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
@@ -830,20 +812,7 @@ def parse_model(d, ch, model_type=None):
         if i == 0:
             ch = []
         ch.append(c2)
-    if model_type=='yolov7':
-        from models.yolov7 import Yolov7, RepConvs_
-        use_layers = nn.Sequential(Yolov7(), 
-                                   RepConvs_(), 
-                                   IDetect(nc=4, anchors=d['anchors'], ch=[256, 512, 1024]))
-        return use_layers, sorted(save)
-    elif 'aux' in model_type:
-        from models.yolov7_aux import Yolov7Aux
-        chs = [256, 512, 768, 1024, 320, 640, 960, 1280]
-        use_layers = nn.Sequential(Yolov7Aux(),
-                                   IAuxDetect(nc=4, anchors=d['anchors'], ch=chs))
-        return use_layers, sorted(save)
     return nn.Sequential(*layers), sorted(save)
-
 
 
 if __name__ == '__main__':
@@ -857,15 +826,13 @@ if __name__ == '__main__':
     device = select_device(opt.device)
 
     # Create model
-    from torchsummary import summary
     model = Model(opt.cfg).to(device)
-    #model.train()
-    print(model)
-    #summary(model, (3, 640, 640))
+    model.train()
+    
     #if opt.profile:
-    img = torch.rand(1, 3, 640, 640).to(device)
-    y = model(img, profile=True)
-    #print(len(y), y[0].shape, y[1].shape, y[2].shape)
+        #img = torch.rand(1, 3, 640, 640).to(device)
+        #y = model(img, profile=True)
+
     # Profile
     # img = torch.rand(8 if torch.cuda.is_available() else 1, 3, 640, 640).to(device)
     # y = model(img, profile=True)
@@ -876,4 +843,3 @@ if __name__ == '__main__':
     # print("Run 'tensorboard --logdir=models/runs' to view tensorboard at http://localhost:6006/")
     # tb_writer.add_graph(model.model, img)  # add model to tensorboard
     # tb_writer.add_image('test', img[0], dataformats='CWH')  # add model to tensorboard
-

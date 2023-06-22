@@ -28,7 +28,6 @@ def detect(save_img=False):
     # Initialize
     set_logging()
     device = select_device(opt.device)
-    print("detecting device", device)
     half = device.type != 'cpu'  # half precision only supported on CUDA
 
     # Load model
@@ -37,7 +36,6 @@ def detect(save_img=False):
     imgsz = check_img_size(imgsz, s=stride)  # check img_size
 
     if trace:
-        print("detecting device", device)
         model = TracedModel(model, device, opt.img_size)
 
     if half:

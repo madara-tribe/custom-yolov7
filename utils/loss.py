@@ -147,15 +147,19 @@ class FocalLoss(nn.Module):
 
 class ComputeLoss:
     # Compute losses
-    def __init__(self, model, autobalance=False):
+    def __init__(self, model, use_cost=None, sinkhorn=None, autobalance=False):
         super(ComputeLoss, self).__init__()
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
 
         # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        if use_cost:
+            self.sinkhorn = sinkhorn
+            BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device), reduction='none')
+        else:
+            BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
-
+        self.use_cost = use_cost
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
         self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
 
@@ -202,7 +206,11 @@ class ComputeLoss:
                     t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
                     t[range(n), tcls[i]] = self.cp
                     #t[t==self.cp] = iou.detach().clamp(0).type(t.dtype)
-                    lcls += self.BCEcls(ps[:, 5:], t)  # BCE
+                    if self.use_cost:
+                        lcls_cost = self.BCEcls(ps[:, 5:], t)
+                        lcls += self.sinkhorn(cost=lcls_cost.unsqueeze(2), pred=ps[:, 5:].unsqueeze(2), truth=t.unsqueeze(2))
+                    else:
+                        lcls += self.BCEcls(ps[:, 5:], t)  # BCE
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
@@ -278,17 +286,21 @@ class ComputeLoss:
 
         return tcls, tbox, indices, anch
 
-
 class ComputeLossOTA:
     # Compute losses
-    def __init__(self, model, autobalance=False):
+    def __init__(self, model, use_cost=None, sinkhorn=None, autobalance=False):
         super(ComputeLossOTA, self).__init__()
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
-
-        # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        
+        if use_cost:
+            self.sinkhorn = sinkhorn
+            BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device), reduction='none')
+        else:
+            BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
+        self.use_cost = use_cost
+        # Define criteria
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
         self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
@@ -305,13 +317,13 @@ class ComputeLossOTA:
         for k in 'na', 'nc', 'nl', 'anchors', 'stride':
             setattr(self, k, getattr(det, k))
 
-    def __call__(self, p, targets, imgs):  # predictions, targets, model
+    def __call__(self, p, targets, imgs):  # predictions, targets, model   
         device = targets.device
         lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         bs, as_, gjs, gis, targets, anchors = self.build_targets(p, targets, imgs)
-        pre_gen_gains = [torch.tensor(pp.shape, device=device)[[3, 2, 3, 2]] for pp in p]
-    
-
+        pre_gen_gains = [torch.tensor(pp.shape, device=device)[[3, 2, 3, 2]] for pp in p] 
+        # cost loss
+        lcls_cost, lbox_cost, lobj_cost = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
         # Losses
         for i, pi in enumerate(p):  # layer index, layer predictions
             b, a, gj, gi = bs[i], as_[i], gjs[i], gis[i]  # image, anchor, gridy, gridx
@@ -330,21 +342,21 @@ class ComputeLossOTA:
                 selected_tbox = targets[i][:, 2:6] * pre_gen_gains[i]
                 selected_tbox[:, :2] -= grid
                 iou = bbox_iou(pbox.T, selected_tbox, x1y1x2y2=False, CIoU=True)  # iou(prediction, target)
-                lbox += (1.0 - iou).mean()  # iou loss
+                lbox += (1.0 - iou).mean() # iou loss
 
                 # Objectness
                 tobj[b, a, gj, gi] = (1.0 - self.gr) + self.gr * iou.detach().clamp(0).type(tobj.dtype)  # iou ratio
-
+                
                 # Classification
                 selected_tcls = targets[i][:, 1].long()
                 if self.nc > 1:  # cls loss (only if multiple classes)
                     t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
                     t[range(n), selected_tcls] = self.cp
-                    lcls += self.BCEcls(ps[:, 5:], t)  # BCE
-
-                # Append targets to text file
-                # with open('targets.txt', 'a') as file:
-                #     [file.write('%11.5g ' * 4 % tuple(x) + '\n') for x in torch.cat((txy[i], twh[i]), 1)]
+                    if self.use_cost:
+                        lcls_cost = self.BCEcls(ps[:, 5:], t)
+                        lcls += self.sinkhorn(cost=lcls_cost.unsqueeze(2), pred=ps[:, 5:].unsqueeze(2), truth=t.unsqueeze(2))
+                    else:
+                        lcls += self.BCEcls(ps[:, 5:], t)  # BCE
 
             obji = self.BCEobj(pi[..., 4], tobj)
             lobj += obji * self.balance[i]  # obj loss
@@ -357,10 +369,20 @@ class ComputeLossOTA:
         lobj *= self.hyp['obj']
         lcls *= self.hyp['cls']
         bs = tobj.shape[0]  # batch size
-
         loss = lbox + lobj + lcls
         return loss * bs, torch.cat((lbox, lobj, lcls, loss)).detach()
-
+        
+    def Sinkhorn_like(self, loss1, loss2, num_gt, topk_pred):
+        cost = (loss1 + 3.0 * loss2)
+        matching_matrix = torch.zeros_like(cost)
+        
+        for gt_idx in range(num_gt):
+            _, pos_idx = torch.topk(
+                cost[gt_idx], k=topk_pred[gt_idx].item(), largest=False
+            )
+            matching_matrix[gt_idx][pos_idx] = 1.0
+        return cost, matching_matrix, topk_pred
+            
     def build_targets(self, p, targets, imgs):
         
         #indices, anch = self.find_positive(p, targets)
@@ -368,7 +390,7 @@ class ComputeLossOTA:
         #indices, anch = self.find_4_positive(p, targets)
         #indices, anch = self.find_5_positive(p, targets)
         #indices, anch = self.find_9_positive(p, targets)
-        device = torch.device(targets.device)
+
         matching_bs = [[] for pp in p]
         matching_as = [[] for pp in p]
         matching_gjs = [[] for pp in p]
@@ -376,7 +398,7 @@ class ComputeLossOTA:
         matching_targets = [[] for pp in p]
         matching_anchs = [[] for pp in p]
         
-        nl = len(p)
+        nl = len(p)    
     
         for batch_idx in range(p[0].shape[0]):
         
@@ -402,15 +424,15 @@ class ComputeLossOTA:
                 
                 b, a, gj, gi = indices[i]
                 idx = (b == batch_idx)
-                b, a, gj, gi = b[idx], a[idx], gj[idx], gi[idx]
+                b, a, gj, gi = b[idx], a[idx], gj[idx], gi[idx]                
                 all_b.append(b)
                 all_a.append(a)
                 all_gj.append(gj)
                 all_gi.append(gi)
                 all_anch.append(anch[i][idx])
-                from_which_layer.append((torch.ones(size=(len(b),), device=targets.device) * i).to(device))
+                from_which_layer.append(torch.ones(size=(len(b),)) * i)
                 
-                fg_pred = pi[b, a, gj, gi]
+                fg_pred = pi[b, a, gj, gi]                
                 p_obj.append(fg_pred[:, 4:5])
                 p_cls.append(fg_pred[:, 5:])
                 
@@ -459,27 +481,17 @@ class ComputeLossOTA:
                torch.log(y/(1-y)) , gt_cls_per_image, reduction="none"
             ).sum(-1)
             del cls_preds_
-        
-            cost = (
-                pair_wise_cls_loss
-                + 3.0 * pair_wise_iou_loss
-            )
 
-            matching_matrix = torch.zeros_like(cost, device=device)
-
-            for gt_idx in range(num_gt):
-                _, pos_idx = torch.topk(
-                    cost[gt_idx], k=dynamic_ks[gt_idx].item(), largest=False
-                )
-                matching_matrix[gt_idx][pos_idx] = 1.0
-
+            cost, matching_matrix, dynamic_ks = self.Sinkhorn_like(loss1=pair_wise_cls_loss, 
+                                                 loss2=pair_wise_iou_loss, 
+                                                 num_gt=num_gt, topk_pred=dynamic_ks)
             del top_k, dynamic_ks
             anchor_matching_gt = matching_matrix.sum(0)
             if (anchor_matching_gt > 1).sum() > 0:
                 _, cost_argmin = torch.min(cost[:, anchor_matching_gt > 1], dim=0)
                 matching_matrix[:, anchor_matching_gt > 1] *= 0.0
                 matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
-            fg_mask_inboxes = (matching_matrix.sum(0) > 0.0).to(device)
+            fg_mask_inboxes = matching_matrix.sum(0) > 0.0
             matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
         
             from_which_layer = from_which_layer[fg_mask_inboxes]
@@ -516,7 +528,7 @@ class ComputeLossOTA:
                 matching_targets[i] = torch.tensor([], device='cuda:0', dtype=torch.int64)
                 matching_anchs[i] = torch.tensor([], device='cuda:0', dtype=torch.int64)
 
-        return matching_bs, matching_as, matching_gjs, matching_gis, matching_targets, matching_anchs
+        return matching_bs, matching_as, matching_gjs, matching_gis, matching_targets, matching_anchs           
 
     def find_3_positive(self, p, targets):
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
@@ -570,8 +582,9 @@ class ComputeLossOTA:
             anch.append(anchors[a])  # anchors
 
         return indices, anch
-   
-    
+        
+        
+
 class ComputeLossAuxOTA:
     # Compute losses
     def __init__(self, model, autobalance=False):
@@ -726,8 +739,8 @@ class ComputeLossAuxOTA:
                 all_gj.append(gj)
                 all_gi.append(gi)
                 all_anch.append(anch[i][idx])
-                #from_which_layer.append(torch.ones(size=(len(b),)) * i)
-                from_which_layer.append((torch.ones(size=(len(b),)) * i).to('cuda'))
+                from_which_layer.append(torch.ones(size=(len(b),)) * i)
+                
                 fg_pred = pi[b, a, gj, gi]                
                 p_obj.append(fg_pred[:, 4:5])
                 p_cls.append(fg_pred[:, 5:])
@@ -879,8 +892,8 @@ class ComputeLossAuxOTA:
                 all_gj.append(gj)
                 all_gi.append(gi)
                 all_anch.append(anch[i][idx])
-                #from_which_layer.append(torch.ones(size=(len(b),)) * i)
-                from_which_layer.append((torch.ones(size=(len(b),)) * i).to('cuda')) 
+                from_which_layer.append(torch.ones(size=(len(b),)) * i)
+                
                 fg_pred = pi[b, a, gj, gi]                
                 p_obj.append(fg_pred[:, 4:5])
                 p_cls.append(fg_pred[:, 5:])
@@ -951,9 +964,8 @@ class ComputeLossAuxOTA:
                 matching_matrix[:, anchor_matching_gt > 1] *= 0.0
                 matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
             fg_mask_inboxes = matching_matrix.sum(0) > 0.0
-            fg_mask_inboxes = fg_mask_inboxes.to(torch.device('cuda'))
             matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
-            
+        
             from_which_layer = from_which_layer[fg_mask_inboxes]
             all_b = all_b[fg_mask_inboxes]
             all_a = all_a[fg_mask_inboxes]
@@ -1095,4 +1107,3 @@ class ComputeLossAuxOTA:
             anch.append(anchors[a])  # anchors
 
         return indices, anch
-

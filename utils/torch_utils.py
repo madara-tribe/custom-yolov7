@@ -339,6 +339,7 @@ def revert_sync_batchnorm(module):
     del module
     return module_output
 
+
 class TracedModel(nn.Module):
 
     def __init__(self, model=None, device=None, img_size=(640,640)): 

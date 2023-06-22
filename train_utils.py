@@ -12,12 +12,14 @@ def get_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='yolo7.pt', help='initial weights path')
     parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
-    parser.add_argument('--mtype', type=str, default='', help='yolo model type')
     parser.add_argument('--data', type=str, default='data/coco.yaml', help='data.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.p5.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=300)
     parser.add_argument('--batch-size', type=int, default=2, help='total batch size for all GPUs')
     parser.add_argument('--img-size', nargs='+', type=int, default=[640, 640], help='[train, test] image sizes')
+    parser.add_argument('--use_cost', default=True, help='Optimal Correction Cost as loss with SinkhornDistance')
+    parser.add_argument('--cost_eps', type=float, default=0.1, help='eps for SinkhornDistance')
+    parser.add_argument('--cost_max_iter', type=int, default=100, help='max iteration for SinkhornDistance')
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
@@ -47,14 +49,14 @@ def get_parser():
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
-    opt = parser.parse_args()
+    opt = parser.parse_args() 
     return opt
+    
     
 def get_aux_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', type=str, default='yolo7.pt', help='initial weights path')
     parser.add_argument('--cfg', type=str, default='', help='model.yaml path')
-    parser.add_argument('--mtype', type=str, default='', help='yolo model type')
     parser.add_argument('--data', type=str, default='data/coco.yaml', help='data.yaml path')
     parser.add_argument('--hyp', type=str, default='data/hyp.scratch.p5.yaml', help='hyperparameters path')
     parser.add_argument('--epochs', type=int, default=100)
@@ -109,9 +111,15 @@ def freeze_aux_model_layers(model):
             v.requires_grad = False
     return model, freeze
 
-def select_loss(model):
-    compute_loss_ota = ComputeLossOTA(model)  # init loss class
-    compute_loss = ComputeLoss(model)  # init loss class
+def select_loss(model, opt, device):
+    if opt.use_cost:
+        from customs.SinkhornDistance import SinkhornDistance
+        sinkhorn = SinkhornDistance(model, eps=opt.cost_eps, max_iter=opt.cost_max_iter, reduction='mean').to(device)
+        compute_loss_ota = ComputeLossOTA(model, use_cost=True, sinkhorn=sinkhorn)
+        compute_loss = ComputeLoss(model, use_cost=True, sinkhorn=sinkhorn)
+    else:
+        compute_loss_ota = ComputeLossOTA(model, use_cost=None)  # init loss class
+        compute_loss = ComputeLoss(model)  # init loss class
     return compute_loss, compute_loss_ota
     
 def select_aux_loss(model):
@@ -255,6 +263,4 @@ def Hyperparameter_evolution_metadata():
                 'copy_paste': (1, 0.0, 1.0),  # segment copy-paste (probability)
                 'paste_in': (1, 0.0, 1.0)}    # segment copy-paste (probability)
     return meta
-
-
 

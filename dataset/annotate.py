@@ -104,4 +104,3 @@ if __name__=="__main__":
         print("python3 ~.py <folder_path>")
         sys.exit(1)
     main(dir_path)
-
