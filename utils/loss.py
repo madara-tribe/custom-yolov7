@@ -408,7 +408,7 @@ class ComputeLossOTA:
                 all_gj.append(gj)
                 all_gi.append(gi)
                 all_anch.append(anch[i][idx])
-                from_which_layer.append((torch.ones(size=(len(b),)) * i).to(device))
+                from_which_layer.append((torch.ones(size=(len(b),), device=targets.device) * i).to(device))
                 
                 fg_pred = pi[b, a, gj, gi]
                 p_obj.append(fg_pred[:, 4:5])
@@ -726,8 +726,8 @@ class ComputeLossAuxOTA:
                 all_gj.append(gj)
                 all_gi.append(gi)
                 all_anch.append(anch[i][idx])
-                from_which_layer.append(torch.ones(size=(len(b),)) * i)
-                
+                #from_which_layer.append(torch.ones(size=(len(b),)) * i)
+                from_which_layer.append((torch.ones(size=(len(b),)) * i).to('cuda'))
                 fg_pred = pi[b, a, gj, gi]                
                 p_obj.append(fg_pred[:, 4:5])
                 p_cls.append(fg_pred[:, 5:])
@@ -879,8 +879,8 @@ class ComputeLossAuxOTA:
                 all_gj.append(gj)
                 all_gi.append(gi)
                 all_anch.append(anch[i][idx])
-                from_which_layer.append(torch.ones(size=(len(b),)) * i)
-                
+                #from_which_layer.append(torch.ones(size=(len(b),)) * i)
+                from_which_layer.append((torch.ones(size=(len(b),)) * i).to('cuda')) 
                 fg_pred = pi[b, a, gj, gi]                
                 p_obj.append(fg_pred[:, 4:5])
                 p_cls.append(fg_pred[:, 5:])
@@ -951,8 +951,10 @@ class ComputeLossAuxOTA:
                 matching_matrix[:, anchor_matching_gt > 1] *= 0.0
                 matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
             fg_mask_inboxes = matching_matrix.sum(0) > 0.0
+            fg_mask_inboxes = fg_mask_inboxes.to(torch.device('cuda'))
             matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
-            from_which_layer = from_which_layer[fg_mask_inboxes] #.to(torch.device('cpu'))
+            
+            from_which_layer = from_which_layer[fg_mask_inboxes]
             all_b = all_b[fg_mask_inboxes]
             all_a = all_a[fg_mask_inboxes]
             all_gj = all_gj[fg_mask_inboxes]
@@ -1093,5 +1095,4 @@ class ComputeLossAuxOTA:
             anch.append(anchors[a])  # anchors
 
         return indices, anch
-
 

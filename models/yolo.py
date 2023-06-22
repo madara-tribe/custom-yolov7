@@ -507,10 +507,10 @@ class IBin(nn.Module):
         return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
 
 class Model(nn.Module):
-    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
+    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc=None, anchors=None, model_type=None):  # model, input channels, number of classes
         super(Model, self).__init__()
         self.traced = False
-        self.model_type = 'yolov7'
+        self.model_type = str(model_type)
         if isinstance(cfg, dict):
             self.yaml = cfg  # model dict
         else:  # is *.yaml
@@ -550,7 +550,7 @@ class Model(nn.Module):
             self.stride = m.stride
             self._initialize_biases()  # only run once
             # print('Strides: %s' % m.stride.tolist())
-        if isinstance(m, IAuxDetect):
+        if 'IAuxDetect' in str(m) or isinstance(m, IAuxDetect):
             s = 256  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[:4]])  # forward
             #print(m.stride)
@@ -604,12 +604,20 @@ class Model(nn.Module):
     def forward_once(self, x, profile=False):
         y, dt = [], []  # outputs
         if self.model_type=='yolov7':
-
             for m in self.model:
                 if not hasattr(self, 'traced'):
                     self.traced=False
                 if self.traced:
                     if 'IDetect' in str(m):
+                        break
+                x = m(x)  # run
+            return x
+        elif 'aux' in self.model_type:
+            for m in self.model:
+                if not hasattr(self, 'traced'):
+                    self.traced=False
+                if self.traced:
+                    if 'IAuxDetect' in str(m):
                         break
                 x = m(x)  # run
             return x
@@ -827,7 +835,12 @@ def parse_model(d, ch, model_type=None):
         use_layers = nn.Sequential(Yolov7(), 
                                    RepConvs_(), 
                                    IDetect(nc=4, anchors=d['anchors'], ch=[256, 512, 1024]))
-        print("passss")
+        return use_layers, sorted(save)
+    elif 'aux' in model_type:
+        from models.yolov7_aux import Yolov7Aux
+        chs = [256, 512, 768, 1024, 320, 640, 960, 1280]
+        use_layers = nn.Sequential(Yolov7Aux(),
+                                   IAuxDetect(nc=4, anchors=d['anchors'], ch=chs))
         return use_layers, sorted(save)
     return nn.Sequential(*layers), sorted(save)
 
